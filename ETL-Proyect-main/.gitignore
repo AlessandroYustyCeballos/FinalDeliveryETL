@@ -1,0 +1,26 @@
+# Archivos y carpetas generados por Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+env/
+.venv/
+.env/
+
+
+
+# Archivos de datos generados locally o temporales
+data/
+*.csv
+*.db
+*.sqlite3
+
+# Logs generados (por ejemplo por Airflow)
+logs/
+*.log
+
+# Herramientas de sistemas operativos
+.DS_Store
+Thumbs.db
