@@ -1,63 +1,252 @@
 <div align="center">
-  <h1>Proyecto ETL de Fuentes de Trading Financiero</h1>
-  <p>Pipeline orquestado por Apache Airflow para extracción, validación y consolidación de datos financieros de fuentes múltiples.</p>
+  <h1>📈 Proyecto ETL Forex — Entrega Final</h1>
+  <p>Pipeline ETL completo orquestado por Apache Airflow, con modelo dimensional en PostgreSQL, streaming en Kafka y dashboards en Metabase (analítico) + Streamlit (real-time).</p>
+
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.11-blue?logo=python" />
+    <img src="https://img.shields.io/badge/Airflow-2.9-017CEE?logo=apacheairflow" />
+    <img src="https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql" />
+    <img src="https://img.shields.io/badge/Kafka-7.6-231F20?logo=apachekafka" />
+    <img src="https://img.shields.io/badge/Streamlit-latest-FF4B4B?logo=streamlit" />
+    <img src="https://img.shields.io/badge/Metabase-latest-509EE3?logo=metabase" />
+    <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker" />
+  </p>
 </div>
 
 ---
 
-# Ejecucion del proyecto
-Abra el main en codespaces, espera hasta que se carguen todos los recursos... automaticamente el contenedor realizará la instalacion de los requerimientos, e inicializacion del entorno Airflow con credenciales admin por defecto. Una vez cargado todo, dirijase a la terminal y ejecute el siguiente comando:
+## 👥 Integrantes
+
+- **Bryan Andres Herrera Betancur** — 2244008
+- **Alessandro Yusty Ceballos** — 2240248
+
+**Curso:** ETL (G51) — Daniel Felipe Romero Bernal
+**Programa:** Ingeniería de Datos e Inteligencia Artificial
+
+---
+
+## 🎯 Objetivo
+
+Diseñar, implementar y automatizar un pipeline ETL reproducible que:
+
+1. **Extrae** datos del mercado forex desde tres fuentes complementarias (Yahoo Finance batch, Finnhub WebSocket, Alpha Vantage REST).
+2. **Transforma** los tres formatos heterogéneos a un esquema unificado.
+3. **Valida** la calidad de los datos con reglas declarativas en pandas (no-nulos, tipos numéricos, precios > 0).
+4. **Carga** los lotes validados a un modelo dimensional en PostgreSQL.
+5. **Stremea** una métrica de la fact table vía Kafka simulando CDC.
+6. **Visualiza** los datos con dos dashboards complementarios: uno analítico (Metabase) y uno operativo en tiempo real (Streamlit + Plotly).
+
+Caso de uso: análisis de comportamiento de divisas como insumo para modelos predictivos futuros, alineado al **ODS 1 — No pobreza** (apps de remesas, microcrédito, hedging para poblaciones vulnerables).
+
+---
+
+## 🏗 Arquitectura
+
+```
+   Yahoo Finance ──┐
+   Finnhub WS ─────┼──► Airflow DAG (ETL_Delivery3) ──► PostgreSQL (modelo dimensional)
+   Alpha Vantage ──┘            │                              │
+                                │ Validación calidad           ├──► Metabase (analítico)
+                                ▼                              │
+                          quarantine_quotes                    └──► Kafka Producer
+                                                                        │
+                                                                  topic: quotes_stream
+                                                                        │
+                                                                        ▼
+                                                                Streamlit (real-time)
+```
+
+> 📄 Diagrama detallado y descripción completa en [`docs/technical_report.md`](docs/technical_report.md).
+
+### Stack
+
+| Capa                  | Tecnología                          |
+|-----------------------|-------------------------------------|
+| Orquestación          | Apache Airflow 2.9                  |
+| Data Warehouse        | PostgreSQL 15 (esquema en estrella) |
+| Streaming             | Apache Kafka 7.6                    |
+| Validación            | Reglas declarativas en pandas       |
+| Dashboard analítico   | Metabase                            |
+| Dashboard real-time   | Streamlit + Plotly                  |
+| Contenerización       | Docker Compose                      |
+
+---
+
+## 📁 Estructura del repositorio
+
+```
+ETL-Proyect/
+├── app/
+│   ├── producer.py            # Kafka producer: lee fact_quotes → topic
+│   ├── consumer.py            # Consumer standalone (debug)
+│   └── dashboard.py           # Streamlit real-time dashboard
+├── dags/
+│   └── ETL.py                 # DAG ETL_Delivery3 (con carga REAL a Postgres)
+├── docs/
+│   ├── technical_report.md    # Documento técnico completo
+│   └── architecture.png       # Diagrama de arquitectura
+├── notebooks/
+│   ├── eda_dataset.ipynb      # EDA del dataset (batch Yahoo)
+│   ├── eda_api.ipynb          # EDA de la API (stream Finnhub)
+│   └── data/                  # CSVs de muestra para los notebooks
+├── sql/
+│   ├── 00_create_metabase_db.sql   # Crea BD para Metabase
+│   └── 01_init_schema.sql          # Modelo dimensional (dim + fact)
+├── Utils/                     # Utilidades de extracción (legacy)
+├── data/                      # CSVs intermedios (no se versiona)
+├── logs/                      # Logs de Airflow (no se versiona)
+├── plugins/                   # Plugins de Airflow
+├── docker-compose.yml         # Stack completo: 8 servicios
+├── preparar.py                # Genera yahoo.csv y finhub.csv iniciales
+├── requirements.txt
+├── .gitignore
+└── README.md
+```
+
+---
+
+## 🚀 Setup rápido
+
+### Requisitos
+
+- **Docker Desktop** con WSL2 (Windows) o nativo (Linux/Mac).
+- **6 GB RAM** mínimo asignados a Docker.
+- Puertos libres: `8080` (Airflow), `8501` (Streamlit), `3000` (Metabase), `5433` (Postgres), `9092` (Kafka).
+
+### Pasos
 
 ```bash
-python -m airflow standalone
-```
-Una ves inicializado el UI de Airflow, dirijase a la pestaña puertos dentro de la misma terminal y de click derecho sobre el puerto 8080 o UI Airflow y modifique la visibilidad del puerto a public, de esta manera podrá acceder al UI de Airflow desde el logo del mundo que muestra el puerto.
+# 1. Clonar
+git clone https://github.com/<usuario>/ETL-Proyect.git
+cd ETL-Proyect
 
-Una ves dentro de Airflow, dirijase a la pestaña DAGs y busque el DAG llamado `ETL_Delivery2`, deberia poder observarse las tareas reconocidas en el DAG. Antes de inicial el DAG lo primordial es inicializar la data por lotes y streaming, para ello dirijase a la pestaña terminal y ejecute el siguiente comando:
+# 2. Levantar todo el stack (toma ~2 min la primera vez por las imágenes)
+docker compose up -d
+
+# 3. Verificar que todos los servicios estén Up / healthy
+docker compose ps
+
+# 4. Generar los CSVs base que necesita el DAG
+docker compose exec airflow-scheduler python /opt/airflow/preparar.py
+# Elegir opción 1 + una divisa
+
+# 5. Abrir las UIs:
+#    Airflow:   http://localhost:8080   (admin / admin)
+#    Metabase:  http://localhost:3000   (setup wizard la primera vez)
+#    Streamlit: http://localhost:8501
+```
+
+### Activar el pipeline
+
+1. **Airflow** → activar el DAG `ETL_Delivery3` con el toggle de la izquierda. Corre cada 2 minutos.
+2. **Metabase** → primer arranque te pide:
+   - Crear cuenta admin (cualquier email/password).
+   - Add data → PostgreSQL:
+     - Host: `postgres` · Port: `5432` · DB: `trading_db`
+     - User: `etl_user` · Pass: `etl_pass`
+3. **Streamlit** → se conecta solo al topic Kafka. Verás "Esperando mensajes..." hasta que el producer envíe el primer dato (después de que el DAG cargue al menos una fila en `fact_quotes`).
+
+### Reset total
 
 ```bash
-python preparar.py
+docker compose down -v     # ⚠ borra volúmenes y datos
+docker compose up -d
 ```
-ingrese por consola la opcion 1 para inicializar seguido de la divisa a conultar. Una ves finalizado el proceso, dirijase a la pestaña DAGs y active el DAG `ETL_Delivery2` desde el interruptor izquierdo.
 
-## Descripción General
-Este proyecto implementa una canalización completa de **ETL (Extracción, Transformación, Carga/Unificación)** construida bajo el motor de Airflow. Se encarga de conectarse recurrentemente a 3 diferentes proveedores de APIs financieras, recolectar lotes de datos, transformarlos a una estructura temporal idéntica, pasarlos por un estricto validador de Calidad de Datos (Data Quality) con **Great Expectations**, y finalmente consolidar en una base local todos aquellos lotes que cumplan la normativa.
+---
 
-## Estructura del Orquestador (DAG)
-El DAG central se llama `ETL_Delivery2` (localizado en `dags/ETL.py`) y se ejecuta rítmicamente. Está compuesto de las siguientes tres macro-fases de negocio:
+## 🔄 Flujo end-to-end
 
-### 1. Extraccion
-Tres tareas paralelas (`extraccion_task_yahoo`, `extraccion_task_finhub`, y `extraccion_task_alpha`) ejecutan consultas a sus respectivas APIs usando llamadas a la web (HTTP Requests) o simulacros de recarga. Empaquetan el valor extraído en caché temporal.
-* Yahoo Finance: Requiere conexión de historial.
-* Finnhub: Optimizado para WebSockets (extrae valores cortos como `p`, `v`, `t`).
-* Alpha Vantage: Extracción JSON (Plan gratuito = max 25/día).
+1. **`preparar.py`** genera los CSVs iniciales (`data/yahoo.csv`, `data/finhub.csv`).
+2. **DAG `ETL_Delivery3`** corre cada 2 min:
+   - Extrae de Yahoo, Finnhub y Alpha Vantage (3 ramas paralelas).
+   - Transforma al esquema unificado.
+   - Valida con reglas declarativas en pandas vía `BranchPythonOperator`.
+   - Carga validados a `fact_quotes` (insert real con SQLAlchemy).
+   - Rechazados van a `quarantine_quotes` con payload JSONB.
+3. **Producer Kafka** consulta `fact_quotes` y publica al topic `quotes_stream` con `time.sleep(1)` entre mensajes (simula CDC, como pide el enunciado).
+4. **Streamlit** consume Kafka en background y grafica con Plotly.
+5. **Metabase** consulta `vw_quotes_flat` (vista que joinea fact + dims) para el dashboard analítico.
 
-### 2. Transformación
-Las tareas leen los CSV residuales de la fase extractiva usando métodos vectorizados de `Pandas`:
-- Estandarización de nombres de columnas a minúsculas (`open`, `high`, `low`, `close`, `price`).
-- Formateo inteligente Universal de Timestamps a texto ISO (`%Y-%m-%d %H:%M:%S`).
-- Aplanamiento de columnas múltiples (solución al problema de MultiIndex de yfinance).
+---
 
-### 3. Aseguramiento Validador y Bifurcacion (Branching)
-Se emplea un motor dinámico usando un `BranchPythonOperator` para las tareas `validar_task_*`. Por medio del framework Great Expectations, analiza las políticas de los negocios:
-* Estructura Cero-Nulos: No permite casillas vacías.
-* Precios Reales: Comprueba rigurosamente que los precios (OHLC o simples) jamás sean valores negativos (`min_value=0`).
-> Condicion Excluyente: Si los datos no pasan este rubro por cualquier motivo (ej. Alpha careciendo de estructuras de High/Low por ser de flujo variable interbancario), Airflow cortará instantáneamente esa línea de flujo.
+## ✅ Atención a la retroalimentación de la entrega 2
 
-### 4. Rutas Finales 
-Si el validador dio *"Éxito"*, las métricas pasan por XCom su ruta hacia la tarea final: **`cargar_db_task`**. 
-Esta consolida todos sus precursores en un Dataframe Maestro único (`data/BD_temp.csv`) organizado crónologicamente inverso, ignorando sin romperse las ramas previas que cayeron en desgracia.
+> *"Muy incompleto el trabajo. crearon muchas tareas fantasmas, que no tienen una conclusión real, por otro lado simulan el merge y la carga con bashoperator. La orquestación falla desde ahí. las visualizaciones deben ser desde la base de datos consolidada, no desde las fuentes obtenidas."*
 
-Si las validaciones fallaron, la métrica es arrojada hacia **`cuarentena`** (Un colector terminal secundario para rechazar lotes dañados o inestables sin perjudicar las otras bases).
+| Observación                                          | Solución en esta entrega                                       |
+|------------------------------------------------------|----------------------------------------------------------------|
+| Tareas fantasma (Merge, validar_merge, etc.)         | Eliminadas. Solo quedan tareas con efecto real.                |
+| Merge/carga simulados con `BashOperator`             | `cargar_db` ahora es `PythonOperator` con inserción real.      |
+| Orquestación rota desde la carga                     | DAG `ETL_Delivery3` end-to-end funcional, idempotente.         |
+| Visualizaciones desde las fuentes (no del warehouse) | Metabase consume de `vw_quotes_flat`; producer lee de fact.    |
 
-## Requisitos de Ejecucion
-Asegúrate de contar con tus dependencias, puedes instalarlas usando:
+---
+
+## 📊 Dashboards
+
+### Metabase — analítico (`http://localhost:3000`)
+
+Sugerencia de gráficos sobre `vw_quotes_flat`:
+
+- Serie temporal del cierre por símbolo.
+- Cierre promedio por símbolo y fuente (Yahoo vs Finnhub vs Alpha).
+- Volatilidad por hora del día (`avg(high - low)`).
+- Cobertura del pipeline por día y fuente.
+
+### Streamlit — real-time (`http://localhost:8501`)
+
+- Selector de par de divisas.
+- Multi-fuente: compara Yahoo / Finnhub / Alpha en el mismo gráfico.
+- KPIs en vivo: último precio + Δ%, máx, mín de la ventana.
+- Vista panorámica: último precio de todos los símbolos en el buffer.
+
+---
+
+## 🧪 Notebooks EDA
+
 ```bash
-pip install -r requirements.txt
+cd notebooks
+jupyter notebook
 ```
-* **Bibliotecas Base**: `pandas`, `requests`
-* **Módulos Financieros**: `yfinance`, `finnhub-python`, `websocket-client`
-* **Orquestador y QA**: `apache-airflow`, `great_expectations`
 
-## Notas de API
-Si integras un contenedor o corres de manera local, considera proveer credenciales vivas dentro del archivo secreto `.env`. La API de AlphaVantage cuenta con restricciones agresivas de Rate Limit, si observas demasiados lotes Alpha dirigiéndose masivamente hacia la cuarentena, verifica la tolerancia diaria de tu cuota.
+- **`eda_dataset.ipynb`** — Análisis exploratorio de los datos batch de Yahoo: calidad, distribución, cobertura.
+- **`eda_api.ipynb`** — Análisis del stream crudo de Finnhub: tasa de mensajes, justificación de la agregación a 1 min.
+
+---
+
+## 🛠 Decisiones clave
+
+| Decisión                                  | Justificación                                                    |
+|-------------------------------------------|------------------------------------------------------------------|
+| Postgres en lugar de SQLite               | Concurrencia + conexión nativa a Metabase + esquema dimensional. |
+| Metabase para BI estático                 | Open source, integra en compose, conecta nativo a Postgres.      |
+| Streamlit para real-time                  | Python-friendly como pide el rubro, hot-reload, simple.          |
+| Producer lee de `fact_quotes` (no del WS) | Garantiza que el stream tenga calidad ya validada.               |
+| Agregación a 1 min en el DAG              | Compatibilidad de esquema entre Yahoo (OHLC) y Finnhub (ticks).  |
+| `UNIQUE(time, symbol, source)` en fact    | Idempotencia: reejecutar el DAG no duplica filas.                |
+
+---
+
+## 🔮 Próximos pasos
+
+- Migrar `_PIP_ADDITIONAL_REQUIREMENTS` a un `Dockerfile` propio.
+- Consumer Kafka que persista alertas en `fact_alerts`.
+- Entrenar modelo predictivo de variación cambiaria (ODS 1).
+- CI con GitHub Actions: lint + tests unitarios de las funciones de transformación.
+
+---
+
+## 📚 Documentación adicional
+
+- **Documento técnico completo:** [`docs/technical_report.md`](docs/technical_report.md)
+- **Diagrama de arquitectura:** [`docs/architecture.png`](docs/architecture.png)
+- **Diseño del DAG:** ver sección 4 del documento técnico.
+- **Modelo dimensional:** ver sección 5 del documento técnico.
+- **Value Generation Articulation:** ver sección 8 del documento técnico.
+
+---
+
+## 📝 Licencia
+
+Proyecto académico — Universidad Autónoma de Occidente.

@@ -1,5 +1,5 @@
 {
-  "name": "Entorno Airflow y GX Delivery 2",
+  "name": "Entorno Airflow - ETL Delivery",
   "image": "mcr.microsoft.com/devcontainers/python:3.11",
   "remoteEnv": {
     "AIRFLOW_HOME": "${containerWorkspaceFolder}",
