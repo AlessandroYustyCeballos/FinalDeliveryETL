@@ -1,0 +1,8 @@
+apache-airflow==2.11.2
+great_expectations
+pandas >=2.0.0
+requests>=2.31.0
+websocket-client>=1.6.0
+yfinance>=0.2.40
+finnhub-python>=2.4.0
+
