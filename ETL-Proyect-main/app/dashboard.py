@@ -1,6 +1,20 @@
+"""
+Real-Time Dashboard - Streamlit + Kafka Consumer.
 
-# Streamlit y Kafka Consumer http://localhost:8501
+Lee mensajes del topic "quotes_stream" en background, mantiene un buffer
+rodante de los últimos N ticks y permite filtrar por símbolo en vivo.
 
+Arquitectura:
+  - Un thread daemon consume Kafka y appendea a un deque thread-safe.
+  - Streamlit re-renderiza el frame cada AUTO_REFRESH segundos.
+  - El selector de símbolo es reactivo (no detiene el stream).
+
+Uso desde host:
+  streamlit run app/dashboard.py
+
+Uso dentro del compose:
+  Ya está corriendo en http://localhost:8501
+"""
 
 import json
 import os
@@ -20,15 +34,20 @@ from kafka.errors import NoBrokersAvailable
 # ---------------------------------------------------------------------
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "kafka:29092")
 KAFKA_TOPIC     = os.environ.get("KAFKA_TOPIC", "quotes_stream")
-BUFFER_SIZE     = int(os.environ.get("BUFFER_SIZE", "2000"))   # ticks max en memoria
-AUTO_REFRESH    = float(os.environ.get("AUTO_REFRESH", "2.0")) # repeticiones
+BUFFER_SIZE     = int(os.environ.get("BUFFER_SIZE", "2000"))   # ticks máx en memoria
+AUTO_REFRESH    = float(os.environ.get("AUTO_REFRESH", "2.0")) # segundos entre repintados
 
 st.set_page_config(
     page_title="Forex Real-Time Dashboard",
+    page_icon="📈",
     layout="wide",
 )
 
-
+# ---------------------------------------------------------------------
+# Buffer global thread-safe + consumer en background
+# (usamos st.cache_resource para que el thread se inicie UNA sola vez
+# durante toda la vida de la sesión Streamlit)
+# ---------------------------------------------------------------------
 @st.cache_resource
 def get_shared_state():
     return {
@@ -77,7 +96,7 @@ def start_consumer_thread():
     return t
 
 
-# consumer 
+# Arrancar el consumer una sola vez
 start_consumer_thread()
 state = get_shared_state()
 
@@ -87,33 +106,33 @@ state = get_shared_state()
 st.title("📈 Forex Real-Time Dashboard")
 st.caption(f"Stream desde Kafka topic **`{KAFKA_TOPIC}`** vía `{KAFKA_BOOTSTRAP}`")
 
-
+# Tomar snapshot del buffer (copia rápida bajo lock)
 with state["lock"]:
     buf_snapshot = list(state["buffer"])
     status = dict(state["status"])
 
-
+# Status bar
 col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-col_s1.metric(" Conexión", "OK" if status["connected"] else "DOWN")
-col_s2.metric(" Mensajes recibidos", status["messages"])
-col_s3.metric(" En buffer", len(buf_snapshot))
-col_s4.metric(" Refresh cada", f"{AUTO_REFRESH}s")
+col_s1.metric("🔌 Conexión", "OK" if status["connected"] else "DOWN")
+col_s2.metric("📨 Mensajes recibidos", status["messages"])
+col_s3.metric("📦 En buffer", len(buf_snapshot))
+col_s4.metric("⏱ Refresh cada", f"{AUTO_REFRESH}s")
 
 if status["error"]:
-    st.warning(f" {status['error']}")
+    st.warning(f"⚠️ {status['error']}")
 
 if not buf_snapshot:
-    st.info(" Esperando mensajes...")
+    st.info("⏳ Esperando mensajes... Asegúrate de que `producer.py` está corriendo y que el DAG cargó datos en `fact_quotes`.")
     time.sleep(AUTO_REFRESH)
     st.rerun()
 
-
+# DataFrame del buffer completo
 df = pd.DataFrame(buf_snapshot)
 df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 df = df.sort_values("timestamp")
 
 # ---------------------------------------------------------------------
-# selectores
+# Sidebar: selectores
 # ---------------------------------------------------------------------
 st.sidebar.header("⚙️ Controles")
 
@@ -151,7 +170,7 @@ if df_sym.empty:
     time.sleep(AUTO_REFRESH)
     st.rerun()
 
-# Metrica útil: 
+# Métrica útil: si Alpha → usar 'price', si Yahoo/Finnhub → 'close'
 df_sym = df_sym.copy()
 df_sym["metric"] = df_sym["close"].fillna(df_sym["price"])
 
@@ -171,7 +190,7 @@ col_k3.metric("🔽 Mínimo (ventana)", f"{df_sym['metric'].min():.5f}")
 col_k4.metric("📊 Ticks en ventana", len(df_sym))
 
 # ---------------------------------------------------------------------
-# linea de precios
+# Gráfico principal: línea de precios
 # ---------------------------------------------------------------------
 fig = go.Figure()
 for src in selected_sources:
@@ -195,7 +214,7 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------------
-# Vista panoramica
+# Vista panorámica: último precio por símbolo (todos los pares)
 # ---------------------------------------------------------------------
 st.subheader("🌐 Vista panorámica — último precio por símbolo")
 panorama = (
@@ -213,7 +232,7 @@ panorama = (
 st.dataframe(panorama, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------
-# Tabla de ultimos ticks (texto)
+# Tabla de últimos ticks (texto)
 # ---------------------------------------------------------------------
 with st.expander(f"🧾 Últimos {min(20, len(df_sym))} ticks de {selected_symbol}"):
     st.dataframe(

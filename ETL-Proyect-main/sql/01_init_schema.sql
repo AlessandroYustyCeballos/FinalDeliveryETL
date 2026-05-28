@@ -1,8 +1,16 @@
 -- =====================================================================
--- ESQUEMA DIMENSIONAL TRADING DB
+-- ESQUEMA DIMENSIONAL - TRADING DB
 -- Pipeline ETL Forex: Yahoo / Finnhub / Alpha Vantage -> Postgres
 -- =====================================================================
+-- Se ejecuta automáticamente la PRIMERA vez que el contenedor Postgres
+-- arranca (porque está montado en /docker-entrypoint-initdb.d/).
+-- Para reejecutar: docker compose down -v && docker compose up -d
+-- =====================================================================
 
+-- ---------------------------------------------------------------------
+-- DIMENSIÓN: SYMBOL
+-- Catálogo de pares de divisas (EUR/USD, GBP/USD, etc.)
+-- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dim_symbol (
     symbol_id       SERIAL PRIMARY KEY,
     symbol          VARCHAR(20) UNIQUE NOT NULL,   -- e.g. 'EURUSD'
@@ -12,7 +20,8 @@ CREATE TABLE IF NOT EXISTS dim_symbol (
 );
 
 -- ---------------------------------------------------------------------
--- SOURCE
+-- DIMENSIÓN: SOURCE
+-- Origen del dato (importante para trazabilidad)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dim_source (
     source_id       SERIAL PRIMARY KEY,
@@ -22,7 +31,8 @@ CREATE TABLE IF NOT EXISTS dim_source (
 );
 
 -- ---------------------------------------------------------------------
--- TIME
+-- DIMENSIÓN: TIME
+-- Tabla de tiempo desnormalizada para facilitar agregaciones en BI
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dim_time (
     time_id         BIGSERIAL PRIMARY KEY,
@@ -39,7 +49,8 @@ CREATE TABLE IF NOT EXISTS dim_time (
 CREATE INDEX IF NOT EXISTS idx_dim_time_date ON dim_time(date_only);
 
 -- ---------------------------------------------------------------------
--- HECHOS FACT_QUOTES
+-- HECHOS: FACT_QUOTES
+-- Métricas OHLC + price unificadas. Una fila por (timestamp, symbol, source).
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS fact_quotes (
     quote_id        BIGSERIAL PRIMARY KEY,
@@ -50,7 +61,7 @@ CREATE TABLE IF NOT EXISTS fact_quotes (
     high            NUMERIC(18, 8),
     low             NUMERIC(18, 8),
     close           NUMERIC(18, 8),
-    price           NUMERIC(18, 8),                -- usado por Alpha 
+    price           NUMERIC(18, 8),                -- usado por Alpha (tick simple)
     loaded_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (time_id, symbol_id, source_id)         -- idempotencia
 );
@@ -60,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_fact_symbol ON fact_quotes(symbol_id);
 CREATE INDEX IF NOT EXISTS idx_fact_source ON fact_quotes(source_id);
 
 -- ---------------------------------------------------------------------
--- CUARENTENA
+-- CUARENTENA: registros que NO pasaron la validación de calidad
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS quarantine_quotes (
     quarantine_id   BIGSERIAL PRIMARY KEY,
@@ -68,12 +79,12 @@ CREATE TABLE IF NOT EXISTS quarantine_quotes (
     symbol          VARCHAR(20),
     timestamp_raw   TEXT,
     payload         JSONB,                         -- fila original completa
-    reason          TEXT,                          -- por que falló
+    reason          TEXT,                          -- por qué falló
     quarantined_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ---------------------------------------------------------------------
--- SEED 
+-- SEED de dim_source (las 3 fuentes ya las conocemos)
 -- ---------------------------------------------------------------------
 INSERT INTO dim_source (source_name, source_type, description) VALUES
     ('Yahoo',   'batch',  'Yahoo Finance vía yfinance, datos OHLC históricos'),
@@ -82,7 +93,8 @@ INSERT INTO dim_source (source_name, source_type, description) VALUES
 ON CONFLICT (source_name) DO NOTHING;
 
 -- ---------------------------------------------------------------------
--- VISTA convenience para streamlit
+-- VISTA convenience para Power BI / Streamlit:
+-- fact + dims aplanado, listo para arrastrar a un dashboard.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW vw_quotes_flat AS
 SELECT

@@ -7,13 +7,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
-    # Variables de entorno opcionales para GX
-    GX_CLOUD_ACCESS_TOKEN:    "${GX_CLOUD_ACCESS_TOKEN:-}"
-    GX_CLOUD_ORGANIZATION_ID: "${GX_CLOUD_ORGANIZATION_ID:-}"
-    GX_CLOUD_WORKSPACE_ID:    "${GX_CLOUD_WORKSPACE_ID:-}"
     _PIP_ADDITIONAL_REQUIREMENTS: >-
       pandas requests yfinance finnhub-python websocket-client
-      great_expectations
       kafka-python psycopg2-binary sqlalchemy
   volumes:
     - ./dags:/opt/airflow/dags
@@ -28,7 +23,7 @@ x-airflow-common: &airflow-common
       condition: service_healthy
 
 services:
-  # Postgres 
+  # ---------- Postgres del PROYECTO (modelo dimensional) ----------
   postgres:
     image: postgres:15
     container_name: postgres
@@ -40,13 +35,13 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./sql:/docker-entrypoint-initdb.d   # ejecuta init_schema.sql al primer arranque
+      - ./sql:/docker-entrypoint-initdb.d   # Auto-ejecuta init_schema.sql al primer arranque
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "etl_user", "-d", "trading_db"]
       interval: 10s
       retries: 5
 
-  #  Postgres Airflow 
+  # ---------- Postgres del METASTORE de Airflow ----------
   airflow-db:
     image: postgres:15
     container_name: airflow-db
@@ -61,7 +56,7 @@ services:
       interval: 10s
       retries: 5
 
-  # Kafka stack 
+  # ---------- Kafka stack ----------
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     container_name: zookeeper
@@ -87,7 +82,7 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
 
-  #  Airflow 
+  # ---------- Airflow ----------
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
@@ -127,7 +122,7 @@ services:
       airflow-db:
         condition: service_healthy
 
-  #  Metabase 
+  # ---------- Metabase (dashboard analítico estático) ----------
   metabase:
     image: metabase/metabase:latest
     container_name: metabase
@@ -151,7 +146,7 @@ services:
       retries: 10
       start_period: 60s
 
-  #  Kafka Producer 
+  # ---------- Kafka Producer (lee de fact_quotes y publica al topic) ----------
   producer:
     image: python:3.11-slim
     container_name: producer
@@ -173,7 +168,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  #  Streamlit 
+  # ---------- Streamlit (dashboard en tiempo real) ----------
   streamlit:
     image: python:3.11-slim
     container_name: streamlit

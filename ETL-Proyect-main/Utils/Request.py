@@ -39,25 +39,25 @@ def Finhub(simbol):
             if data.get('type') == 'trade' and 'data' in data:
                 Save.Guarda("Finhub", data)
             elif data.get('type') == 'ping':
-               
+                # Ignoramos los pings silenciosamente para no ensuciar la consola
                 pass
             else:
-               
-                print(f"Mensaje del sistema: {data}")
+                # Otros mensajes del sistema (como confirmación de suscripción)
+                print(f"📢 Mensaje del sistema: {data}")
 
         except Exception as e:
-            print(f"Error procesando mensaje: {e}")
+            print(f"⚠️ Error procesando mensaje: {e}")
 
     def on_open(ws):
         for symbol in SYMBOLS:
             msg = {"type": "subscribe", "symbol": symbol}
             ws.send(json.dumps(msg))
-            print(f"Suscrito a: {symbol}")
+            print(f"📡 Suscrito a: {symbol}")
 
-        print(f"Conexión iniciada. Guardando..")
+        print(f"📡 Conexión iniciada. Guardando..")
 
     def on_error(ws, error):
-        print(f"Error de WebSocket: {error}")
+        print(f"❌ Error de WebSocket: {error}")
 
     def on_close(ws, close_status_code, close_msg):
         print("### Conexión cerrada ###")
