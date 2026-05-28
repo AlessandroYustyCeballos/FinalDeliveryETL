@@ -71,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_fact_symbol ON fact_quotes(symbol_id);
 CREATE INDEX IF NOT EXISTS idx_fact_source ON fact_quotes(source_id);
 
 -- ---------------------------------------------------------------------
--- CUARENTENA: registros que NO pasaron la validación de calidad
+-- CUARENTENA: registros que NO pasaron Great Expectations
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS quarantine_quotes (
     quarantine_id   BIGSERIAL PRIMARY KEY,

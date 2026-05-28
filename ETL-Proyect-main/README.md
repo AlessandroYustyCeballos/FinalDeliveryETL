@@ -44,7 +44,7 @@ Todo se levanta con **un solo comando**: `docker compose up -d`.
 | **Orquestación** | Apache Airflow 2.9 |
 | **Data Warehouse** | PostgreSQL 15 (esquema en estrella) |
 | **Streaming** | Apache Kafka 7.6 |
-| **Validación** | Reglas declarativas en pandas |
+| **Validación** | Great Expectations 1.x+ (API moderna + GX Cloud opcional) |
 | **BI analítico** | Metabase |
 | **Real-time** | Streamlit + Plotly |
 | **Infraestructura** | Docker Compose |
@@ -183,7 +183,7 @@ Esquema en estrella sobre PostgreSQL. Definido en [`sql/01_init_schema.sql`](sql
 | Producer lee de `fact_quotes` | Garantiza calidad ya validada (no del stream crudo). |
 | Agregación a 1 min en el DAG | Schema compatible entre Yahoo (OHLC) y Finnhub (ticks). |
 | `UNIQUE(time, symbol, source)` | Idempotencia: reejecutar el DAG no duplica filas. |
-| Validación pandas vs Great Expectations | API simple, sin dependencias frágiles, mismas reglas. |
+| GE pineado a 0.17.23 | API `from_pandas` estable; las versiones 1.x+ rompen compatibilidad. |
 
 ---
 

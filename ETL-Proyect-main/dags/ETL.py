@@ -20,6 +20,7 @@ import requests
 from sqlalchemy import create_engine, text
 
 from airflow import DAG
+from airflow.exceptions import AirflowSkipException
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.bash import BashOperator
 
@@ -71,15 +72,28 @@ def extraccion_finhub():
 
 
 def extraccion_alpha():
+    """Extracción Alpha con manejo graceful del rate limit (25 calls/día gratis).
+
+    Si Alpha no responde con la estructura esperada (típicamente por rate
+    limit), marcamos la rama como SKIPPED en vez de FAILED. Así las otras
+    ramas (Yahoo, Finnhub) siguen sin que cargar_db caiga en upstream_failed.
+    """
     os.makedirs(Temp_path, exist_ok=True)
     url = (
         "https://www.alphavantage.co/query"
         "?function=CURRENCY_EXCHANGE_RATE&from_currency=EUR&to_currency=USD"
         f"&apikey={ALPHA_API_KEY}"
     )
-    data = requests.get(url, timeout=30).json()
+    try:
+        data = requests.get(url, timeout=30).json()
+    except Exception as e:
+        raise AirflowSkipException(f"Alpha inalcanzable: {e}")
+
     if "Realtime Currency Exchange Rate" not in data:
-        raise ValueError(f"Respuesta inesperada de Alpha: {data}")
+        # Caso típico: rate limit. Alpha devuelve {"Information": "..."} o {"Note": "..."}
+        msg = data.get("Information") or data.get("Note") or str(data)[:200]
+        raise AirflowSkipException(f"Alpha sin datos (probable rate limit): {msg}")
+
     payload = data["Realtime Currency Exchange Rate"]
     pd.DataFrame([payload]).to_csv(f"{Temp_path}/alpha.csv", index=False)
     print("[OK] Alpha extraído")
@@ -183,18 +197,24 @@ def transformacion_alpha():
 
 
 # ============================================================
-# VALIDACIÓN (reglas equivalentes a Great Expectations, en pandas)
+# VALIDACIÓN (Great Expectations - API moderna, mismo patrón
+# que el notebook GX_cloud.ipynb del docente).
 # ------------------------------------------------------------
-# Decisión técnica: GE 1.x+ rompió la API simple `gx.from_pandas()` y
-# ahora exige DataContext + Datasource + BatchRequest, lo cual añade
-# complejidad sin valor para un pipeline así. Implementamos las mismas
-# reglas (no-nulos + min_value>0) directamente con pandas. La semántica
-# es 1:1 con el suite original mencionado en el documento técnico.
+# Patrón:
+#   1. get_context (cloud si hay token, ephemeral local si no)
+#   2. Data Source pandas -> Asset DataFrame -> Batch Definition
+#   3. ExpectationSuite con gxe.Expect* (clases, no métodos)
+#   4. ValidationDefinition que une suite + batch
+#   5. .run() devuelve resultado con success bool + result_url
 # ============================================================
 def Validar_gx(**kwargs):
+    import great_expectations as gx
+    import great_expectations.expectations as gxe
+
     ti = kwargs["ti"]
     target_task_id = kwargs.get("target_task_id")
     branch_ok = kwargs.get("branch_ok")
+    source_label = target_task_id.replace("transformacion_", "")  # yahoo / finhub / alpha
     ruta_csv  = ti.xcom_pull(task_ids=target_task_id)
 
     if not ruta_csv or not os.path.exists(ruta_csv):
@@ -202,42 +222,97 @@ def Validar_gx(**kwargs):
         return "cuarentena"
 
     df = pd.read_csv(ruta_csv)
-    fallos = []
 
-    # --- Regla 1: columnas obligatorias no nulas ---
-    for col in ("symbol", "timestamp"):
-        if col not in df.columns:
-            fallos.append(f"falta columna obligatoria '{col}'")
-        elif df[col].isna().any():
-            fallos.append(f"'{col}' contiene nulos ({df[col].isna().sum()} filas)")
+    # ------------------------------------------------------------
+    # 1. Contexto: cloud si hay credenciales, ephemeral local si no
+    # ------------------------------------------------------------
+    if os.environ.get("GX_CLOUD_ACCESS_TOKEN"):
+        context = gx.get_context(mode="cloud")
+        print(f"[GX] Conectado a GX Cloud ({type(context).__name__})")
+    else:
+        context = gx.get_context(mode="ephemeral")
+        print(f"[GX] Contexto ephemeral local (sin cloud)")
 
-    # --- Regla 2: si trae OHLC (Yahoo/Finnhub), validar OHLC ---
-    tiene_ohlc = "close" in df.columns and df["close"].notna().any()
-    if tiene_ohlc:
-        for col in ("open", "high", "low", "close"):
-            if col not in df.columns:
-                fallos.append(f"falta columna OHLC '{col}'")
-                continue
-            serie = pd.to_numeric(df[col], errors="coerce")
-            if serie.isna().any():
-                fallos.append(f"'{col}' tiene valores no numéricos o nulos")
-            elif (serie <= 0).any():
-                fallos.append(f"'{col}' contiene valores <= 0")
+    # ------------------------------------------------------------
+    # 2. Data Source -> Asset -> Batch Definition
+    # ------------------------------------------------------------
+    ds_name    = f"forex_{source_label}_ds"
+    asset_name = f"forex_{source_label}_asset"
+    batch_def  = f"forex_{source_label}_batch"
 
-    # --- Regla 3: si trae price (Alpha), validar price ---
-    if "price" in df.columns and df["price"].notna().any():
-        serie = pd.to_numeric(df["price"], errors="coerce")
-        if serie.isna().any():
-            fallos.append("'price' tiene valores no numéricos o nulos")
-        elif (serie <= 0).any():
-            fallos.append("'price' contiene valores <= 0")
+    try:
+        datasource = context.data_sources.add_pandas(name=ds_name)
+    except Exception:
+        datasource = context.data_sources.get(ds_name)
 
-    if fallos:
-        print(f"[FAIL] {ruta_csv} | reglas violadas: {fallos}")
-        return "cuarentena"
+    try:
+        asset = datasource.add_dataframe_asset(name=asset_name)
+    except Exception:
+        asset = datasource.get_asset(asset_name)
 
-    print(f"[OK] Validación exitosa: {ruta_csv} ({len(df)} filas)")
-    return branch_ok
+    try:
+        batch_definition = asset.add_batch_definition_whole_dataframe(batch_def)
+    except Exception:
+        batch_definition = asset.get_batch_definition(batch_def)
+
+    # ------------------------------------------------------------
+    # 3. ExpectationSuite con clases gxe.Expect*
+    # ------------------------------------------------------------
+    suite_name = f"suite_forex_{source_label}"
+    try:
+        suite = gx.ExpectationSuite(name=suite_name)
+
+        # Reglas comunes a todas las fuentes
+        suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column="symbol"))
+        suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column="timestamp"))
+
+        # Reglas OHLC (Yahoo / Finnhub)
+        if "close" in df.columns and df["close"].notna().any():
+            for col in ("open", "high", "low", "close"):
+                suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column=col))
+                suite.add_expectation(gxe.ExpectColumnValuesToBeBetween(
+                    column=col, min_value=0, strict_min=True
+                ))
+
+        # Reglas para price (Alpha)
+        if "price" in df.columns and df["price"].notna().any():
+            suite.add_expectation(gxe.ExpectColumnValuesToBeBetween(
+                column="price", min_value=0, strict_min=True
+            ))
+
+        context.suites.add(suite)
+    except Exception:
+        suite = context.suites.get(name=suite_name)
+
+    # ------------------------------------------------------------
+    # 4. Validation Definition
+    # ------------------------------------------------------------
+    vd_name = f"vd_forex_{source_label}"
+    try:
+        validation_definition = gx.ValidationDefinition(
+            data=batch_definition,
+            suite=suite,
+            name=vd_name,
+        )
+        context.validation_definitions.add(validation_definition)
+    except Exception:
+        validation_definition = context.validation_definitions.get(vd_name)
+
+    # ------------------------------------------------------------
+    # 5. Ejecutar la auditoría pasando el DataFrame como batch_parameters
+    # ------------------------------------------------------------
+    results = validation_definition.run(batch_parameters={"dataframe": df})
+
+    print(f"[GX] Suite: {suite_name} | success={results.success}")
+    if getattr(results, "result_url", None):
+        print(f"[GX] Reporte cloud: {results.result_url}")
+
+    if results.success:
+        print(f"[OK] Validación GX exitosa: {ruta_csv} ({len(df)} filas)")
+        return branch_ok
+
+    print(f"[FAIL] {ruta_csv} | expectativas no cumplidas")
+    return "cuarentena"
 
 
 # ============================================================
@@ -334,9 +409,14 @@ def cargar_db(**kwargs):
                     """),
                     {
                         "t": time_id, "s": symbol_id, "src": source_id,
-                        "o": row.get("open"),  "h": row.get("high"),
-                        "l": row.get("low"),   "c": row.get("close"),
-                        "p": row.get("price"),
+                        # Convertimos NaN de pandas a None para que Postgres
+                        # lo guarde como NULL (no como el valor especial 'NaN'
+                        # de NUMERIC, que rompe COALESCE en los dashboards).
+                        "o": None if pd.isna(row.get("open"))  else float(row["open"]),
+                        "h": None if pd.isna(row.get("high"))  else float(row["high"]),
+                        "l": None if pd.isna(row.get("low"))   else float(row["low"]),
+                        "c": None if pd.isna(row.get("close")) else float(row["close"]),
+                        "p": None if pd.isna(row.get("price")) else float(row["price"]),
                     },
                 )
                 inserted += 1
@@ -377,7 +457,7 @@ def cuarentena(**kwargs):
                         "sym": str(row.get("symbol", "")),
                         "ts":  str(row.get("timestamp", "")),
                         "pl":  json.dumps(row.dropna().to_dict(), default=str),
-                        "r":   "fallo validación de calidad",
+                        "r":   "fallo Great Expectations",
                     },
                 )
             print(f"[QUAR] {len(df)} filas de {source} en cuarentena")

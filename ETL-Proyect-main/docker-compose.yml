@@ -7,8 +7,14 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+    # Variables de entorno opcionales para GX Cloud (si están vacías,
+    # el DAG cae a contexto ephemeral local automáticamente)
+    GX_CLOUD_ACCESS_TOKEN:    "${GX_CLOUD_ACCESS_TOKEN:-}"
+    GX_CLOUD_ORGANIZATION_ID: "${GX_CLOUD_ORGANIZATION_ID:-}"
+    GX_CLOUD_WORKSPACE_ID:    "${GX_CLOUD_WORKSPACE_ID:-}"
     _PIP_ADDITIONAL_REQUIREMENTS: >-
       pandas requests yfinance finnhub-python websocket-client
+      great_expectations
       kafka-python psycopg2-binary sqlalchemy
   volumes:
     - ./dags:/opt/airflow/dags

@@ -74,7 +74,7 @@ Esta entrega final corrige los problemas señalados en la retroalimentación de 
 | Orquestación           | Apache Airflow 2.9                    | Estándar de la industria, BranchPython para validación.    |
 | Data Warehouse         | PostgreSQL 15                         | Soporte SQL completo, JSONB para cuarentena, integra BI.   |
 | Streaming              | Apache Kafka (Confluent 7.6.1)        | Pub/sub robusto, simula CDC sobre la fact table.           |
-| Validación             | Reglas declarativas en pandas         | Sin dependencias externas, rápido y legible.               |
+| Validación             | Great Expectations 1.x+ (API moderna) | Suite persistente + ValidationDefinition + soporte GX Cloud. |
 | Dashboard analítico    | Metabase                              | No-code, conecta nativo a Postgres, levanta en compose.    |
 | Dashboard real-time    | Streamlit + Plotly                    | Python-friendly como pide el rubro, integra Kafka fácil.   |
 | Contenerización        | Docker Compose                        | Reproducibilidad total, un comando para todo el stack.     |
@@ -107,7 +107,7 @@ Las tres transformaciones convergen al **mismo esquema unificado**: `timestamp, 
 
 ### 3.3. Validación de calidad
 
-Implementada como `BranchPythonOperator` (`validar_yahoo`, `validar_finhub`, `validar_alpha`) con reglas declarativas en pandas. Las reglas:
+Implementada como `BranchPythonOperator` (`validar_yahoo`, `validar_finhub`, `validar_alpha`) usando **Great Expectations** con la API moderna (1.x+) siguiendo el patrón `ExpectationSuite + ValidationDefinition`. Las reglas:
 
 | Regla                                                 | Aplica a               |
 |-------------------------------------------------------|------------------------|
@@ -116,7 +116,15 @@ Implementada como `BranchPythonOperator` (`validar_yahoo`, `validar_finhub`, `va
 | Valores estrictamente positivos (`> 0`)               | open, high, low, close, price |
 | Detección automática de OHLC vs price (Alpha)         | según presencia        |
 
-> **Decisión técnica:** la entrega 2 modelaba estas reglas con Great Expectations. En la entrega final se migraron a pandas puro porque (a) la API de GE 1.x+ requiere `DataContext` + `Datasource` + `BatchRequest`, lo que añade complejidad sin valor para este pipeline; (b) las mismas reglas se expresan en menos código y se ejecutan más rápido; (c) reduce dependencias del contenedor de Airflow. La **semántica del suite es idéntica**: si una sola regla falla, todo el lote se redirige a cuarentena.
+**Patrón implementado** (mismo flujo que el material del docente):
+
+1. `gx.get_context(mode="cloud")` si hay token de GX Cloud en variables de entorno, o `mode="ephemeral"` como fallback local. Esto permite que el reporte de cada validación se publique automáticamente en el dashboard de GX Cloud con `result_url`.
+2. `context.data_sources.add_pandas(...)` → `add_dataframe_asset(...)` → `add_batch_definition_whole_dataframe(...)` para formalizar la fuente.
+3. `gx.ExpectationSuite(name=...)` con `suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(...))` y `gxe.ExpectColumnValuesToBeBetween(...)` (clases de la API moderna, no métodos sobre el DataFrame).
+4. `gx.ValidationDefinition(data=..., suite=..., name=...)` que vincula el batch con la suite.
+5. `validation_definition.run(batch_parameters={"dataframe": df})` ejecuta la auditoría y devuelve un objeto con `.success` y, si hay cloud, `.result_url` con el reporte visual.
+
+**Si una sola expectativa falla, todo el lote se redirige a cuarentena**. El bloque está envuelto en `try/except` para reutilizar suites, datasources y validation definitions si ya existen en GX Cloud entre corridas del DAG.
 
 **Rutas según resultado:**
 - ✅ Pasa → `cargar_db` (insert al modelo dimensional)
@@ -155,7 +163,7 @@ extraccion_alpha  → transformacion_alpha  → validar_alpha  ─┘
 | `extraccion_finhub`    | PythonOperator           | Copia `finhub.csv` a `/data/temp/`.                         |
 | `extraccion_alpha`     | PythonOperator           | GET a Alpha Vantage, guarda JSON como CSV.                  |
 | `transformacion_*`     | PythonOperator (x3)      | Normaliza al esquema unificado, devuelve ruta por XCom.     |
-| `validar_*`            | BranchPythonOperator (x3)| Aplica reglas declarativas en pandas, decide la siguiente rama. |
+| `validar_*`            | BranchPythonOperator (x3)| Aplica suite de Great Expectations, decide la siguiente rama.   |
 | `cargar_db`            | PythonOperator           | **Inserción real** en `dim_*` y `fact_quotes`.              |
 | `cuarentena`           | PythonOperator           | **Persistencia real** en `quarantine_quotes` con JSONB.     |
 
@@ -304,7 +312,7 @@ Crucialmente, **ambos planos consumen del mismo modelo dimensional**: el produce
 | Producer lee de `fact_quotes` (no de Finnhub)  | Stream directo de Finnhub a Kafka  | + Garantiza calidad ya validada. − No es CDC "real".       |
 | Tareas paralelas en el DAG                     | Pipeline secuencial                | + Throughput. − Más complejidad en branching.              |
 | Esquema dimensional vs tabla por símbolo (E2)  | Mantener tablas dinámicas por par  | + Soporta BI. − Requiere upserts en dimensiones.           |
-| Validación en pandas vs Great Expectations (E2)| Migrar a la nueva API de GE 1.x+   | + Menos deps, más rápido. − Pierde el ecosistema GE.       |
+| GE 1.x+ API moderna (Suite + ValidationDef)    | API legacy `from_pandas()`         | + Suite persistente, integración con GX Cloud, mismo patrón del docente. |
 
 ---
 
