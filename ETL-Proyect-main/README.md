@@ -4,12 +4,13 @@
 
 **Pipeline ETL end-to-end para datos del mercado forex con orquestación Airflow, streaming Kafka y dashboards en tiempo real.**
 
+</div>
 
 ---
 
 ## 🎯 ¿Qué hace este proyecto?
 
-Extrae datos de tres fuentes de divisas (**Yahoo Finance**, **Finnhub** WebSocket, **Alpha Vantage**), los valida, los carga en un **modelo dimensional sobre PostgreSQL**, y los expone vía dos dashboards complementarios:
+Extrae datos de tres fuentes de divisas (**Yahoo Finance**, **Finnhub** WebSocket, **Alpha Vantage**), los valida con **Great Expectations**, los carga en un **modelo dimensional sobre PostgreSQL**, y los expone vía dos dashboards complementarios:
 
 - 📊 **Metabase** para análisis histórico sobre el data warehouse.
 - ⚡ **Streamlit + Kafka** para visualización en tiempo real.
@@ -27,15 +28,16 @@ Todo se levanta con **un solo comando**: `docker compose up -d`.
    Finnhub WS ─────┼──► Airflow DAG ──► PostgreSQL ──┬──► Metabase (analítico)
    Alpha Vantage ──┘   (extract,        (modelo      │
                         transform,      dimensional) └──► Kafka Producer
-                        validate,                          │
+                        validate GX,                       │
                         load)                          quotes_stream
                           │                                │
                           ▼                                ▼
                   quarantine_quotes                  Streamlit (real-time)
 ```
 
-> 📐 Diagrama detallado: [`docs/architecture.png`](docs/architecture.png)
 > 📄 Documento técnico: [`docs/technical_report.md`](docs/technical_report.md)
+> 📑 Informe ejecutivo: [`docs/informe_entrega_final.pdf`](docs/informe_entrega_final.pdf)
+> 📊 Dashboard estático: [`docs/Metabase - Dashboard estatico.pdf`](docs/Metabase%20-%20Dashboard%20estatico.pdf)
 
 ### Stack
 
@@ -43,11 +45,11 @@ Todo se levanta con **un solo comando**: `docker compose up -d`.
 |---|---|
 | **Orquestación** | Apache Airflow 2.9 |
 | **Data Warehouse** | PostgreSQL 15 (esquema en estrella) |
-| **Streaming** | Apache Kafka 7.6 |
+| **Streaming** | Apache Kafka 7.6 (Confluent) |
 | **Validación** | Great Expectations 1.x+ (API moderna + GX Cloud opcional) |
 | **BI analítico** | Metabase |
-| **Real-time** | Streamlit + Plotly |
-| **Infraestructura** | Docker Compose |
+| **Real-time dashboard** | Streamlit + Plotly |
+| **Infraestructura** | Docker Compose (9 servicios) |
 
 ---
 
@@ -63,8 +65,8 @@ Todo se levanta con **un solo comando**: `docker compose up -d`.
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/<usuario>/ETL-Proyect.git
-cd ETL-Proyect
+git clone https://github.com/AlessandroYustyCeballos/FinalDeliveryETL.git
+cd FinalDeliveryETL/ETL-Proyect-main
 
 # Levantar todo el stack
 docker compose up -d
@@ -77,8 +79,9 @@ docker compose up -d
 ```bash
 # Generar los CSVs base (yahoo.csv y finhub.csv)
 docker compose exec airflow-scheduler python /opt/airflow/preparar.py
-# → Opción 1 → seleccionar índice de divisa (ej. 0 = EURUSD)
-# → Ctrl+C después de ~30 segundos para detener Finnhub
+# → Inicializar?: escribir 1
+# → Escoger divisa: escribir índice (ej. 0 = EURUSD)
+# → Ctrl+C después de ~30s para detener Finnhub
 ```
 
 ### Acceder a las UIs
@@ -98,33 +101,50 @@ En Airflow, activa el DAG `ETL_Delivery3` con el toggle de la izquierda. Se ejec
    - Host: `postgres` · Port: `5432` · DB: `trading_db`
    - User: `etl_user` · Pass: `etl_pass`
 
+### (Opcional) Integración con GX Cloud
+
+Si tienes una cuenta de [Great Expectations Cloud](https://greatexpectations.io/cloud), crea un archivo `.env` en la raíz con tus credenciales:
+
+```bash
+GX_CLOUD_ACCESS_TOKEN=tu_token
+GX_CLOUD_ORGANIZATION_ID=tu_org_id
+GX_CLOUD_WORKSPACE_ID=tu_workspace_id
+```
+
+Sin estas variables, la validación corre en modo **ephemeral local** (igualmente funciona). Con ellas, cada validación publica un `result_url` en GX Cloud con el reporte visual.
+
 ---
 
 ## 📁 Estructura
 
 ```
-ETL-Proyect/
-├── app/                          # Aplicación Python
-│   ├── producer.py               # Kafka producer (fact_quotes → topic)
-│   ├── consumer.py               # Consumer standalone (debug)
-│   └── dashboard.py              # Streamlit real-time
-├── dags/
-│   └── ETL.py                    # DAG ETL_Delivery3
-├── sql/                          # Init scripts de Postgres
-│   ├── 00_create_metabase_db.sql
-│   └── 01_init_schema.sql        # Modelo dimensional
-├── docs/
-│   ├── technical_report.md       # Documento técnico
-│   ├── architecture.png          # Diagrama
-│   └── kpis.sql                  # Biblioteca de queries para Metabase
-├── notebooks/
-│   ├── eda_dataset.ipynb         # EDA del batch (Yahoo)
-│   ├── eda_api.ipynb             # EDA del stream (Finnhub)
-│   └── data/                     # CSVs de muestra
-├── Utils/                        # Helpers de extracción
-├── docker-compose.yml            # 9 servicios
-├── preparar.py                   # Bootstrap de CSVs
-└── requirements.txt
+FinalDeliveryETL/
+└── ETL-Proyect-main/
+    ├── app/                          # Aplicación Python
+    │   ├── producer.py               # Kafka producer (fact_quotes → topic)
+    │   ├── consumer.py               # Consumer standalone (debug)
+    │   └── dashboard.py              # Streamlit real-time
+    ├── dags/
+    │   └── ETL.py                    # DAG ETL_Delivery3
+    ├── sql/                          # Init scripts de Postgres
+    │   ├── 00_create_metabase_db.sql
+    │   └── 01_init_schema.sql        # Modelo dimensional
+    ├── docs/
+    │   ├── technical_report.md       # Documento técnico
+    │   ├── informe_entrega_final.pdf # Informe ejecutivo (auto-generado)
+    │   ├── generate_report.py        # Generador del PDF (reproducible)
+    │   ├── kpis.sql                  # Biblioteca de queries para Metabase
+    │   └── Metabase - Dashboard estatico.pdf
+    ├── notebooks/
+    │   ├── eda_dataset.ipynb         # EDA del batch (Yahoo)
+    │   ├── eda_api.ipynb             # EDA del stream (Finnhub)
+    │   └── data/                     # CSVs de muestra
+    ├── Utils/                        # Helpers de extracción
+    ├── docker-compose.yml            # 9 servicios
+    ├── preparar.py                   # Bootstrap interactivo de CSVs
+    ├── Save.py                       # Helper de persistencia
+    ├── requirements.txt
+    └── README.md
 ```
 
 ---
@@ -137,7 +157,7 @@ ETL-Proyect/
 2️⃣  Airflow DAG (cada 2 min)
     ├── extraccion_*      → carga CSVs / hace request a Alpha
     ├── transformacion_*  → schema unificado (timestamp, symbol, OHLC, source)
-    ├── validar_*         → reglas de calidad (BranchPythonOperator)
+    ├── validar_*         → Great Expectations + BranchPythonOperator
     ├── cargar_db         → INSERT real en dim_* y fact_quotes
     └── cuarentena        → JSONB en quarantine_quotes si falla validación
 
@@ -168,8 +188,36 @@ Esquema en estrella sobre PostgreSQL. Definido en [`sql/01_init_schema.sql`](sql
 ```
 
 - **`fact_quotes`** — OHLC + price, con `UNIQUE(time_id, symbol_id, source_id)` para idempotencia.
-- **`quarantine_quotes`** — lotes rechazados con payload JSONB y razón.
+- **`quarantine_quotes`** — lotes rechazados por GX con payload JSONB y razón.
 - **`vw_quotes_flat`** — vista que joinea fact + dims, lista para Metabase.
+
+---
+
+## ✅ Validación con Great Expectations
+
+Cada rama del DAG pasa por un `BranchPythonOperator` que usa el **patrón moderno de Great Expectations** (mismo flujo del notebook de referencia del curso):
+
+```python
+context  = gx.get_context(mode="cloud" if token else "ephemeral")
+ds       = context.data_sources.add_pandas(name=...)
+asset    = ds.add_dataframe_asset(name=...)
+batch    = asset.add_batch_definition_whole_dataframe(...)
+suite    = gx.ExpectationSuite(name=...)
+suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column="symbol"))
+suite.add_expectation(gxe.ExpectColumnValuesToBeBetween(column="close", min_value=0, strict_min=True))
+vd       = gx.ValidationDefinition(data=batch, suite=suite, name=...)
+results  = vd.run(batch_parameters={"dataframe": df})
+```
+
+Reglas aplicadas:
+
+| Regla | Aplica a |
+|---|---|
+| `ExpectColumnValuesToNotBeNull` | `symbol`, `timestamp` |
+| `ExpectColumnValuesToNotBeNull` + positivos | `open`, `high`, `low`, `close` (Yahoo / Finnhub) |
+| `ExpectColumnValuesToBeBetween(min=0)` | `price` (Alpha) |
+
+Si una sola expectativa falla, todo el lote se redirige a `quarantine_quotes`.
 
 ---
 
@@ -183,7 +231,8 @@ Esquema en estrella sobre PostgreSQL. Definido en [`sql/01_init_schema.sql`](sql
 | Producer lee de `fact_quotes` | Garantiza calidad ya validada (no del stream crudo). |
 | Agregación a 1 min en el DAG | Schema compatible entre Yahoo (OHLC) y Finnhub (ticks). |
 | `UNIQUE(time, symbol, source)` | Idempotencia: reejecutar el DAG no duplica filas. |
-| GE pineado a 0.17.23 | API `from_pandas` estable; las versiones 1.x+ rompen compatibilidad. |
+| GE API moderna + GX Cloud | Suite persistente, ValidationDefinition, mismo patrón del docente. |
+| NaN→NULL al cargar | Evita NUMERIC 'NaN' literal de Postgres que rompía `COALESCE` en BI. |
 
 ---
 
@@ -206,8 +255,8 @@ Esquema en estrella sobre PostgreSQL. Definido en [`sql/01_init_schema.sql`](sql
 # Ver estado de los servicios
 docker compose ps
 
-# Logs de un servicio
-docker compose logs -f airflow-scheduler
+# Logs de un servicio (producer, scheduler, etc.)
+docker compose logs -f producer
 
 # Trigger del DAG por CLI
 docker compose exec airflow-scheduler airflow dags trigger ETL_Delivery3
@@ -215,11 +264,20 @@ docker compose exec airflow-scheduler airflow dags trigger ETL_Delivery3
 # Verificar datos en el warehouse
 docker exec -it postgres psql -U etl_user -d trading_db -c "SELECT source_name, COUNT(*) FROM vw_quotes_flat GROUP BY source_name;"
 
+# Limpiar NaN literales si quedaron (después de cambios de esquema)
+docker exec -it postgres psql -U etl_user -d trading_db -c "UPDATE fact_quotes SET open=NULL WHERE open::text='NaN'; UPDATE fact_quotes SET close=NULL WHERE close::text='NaN'; UPDATE fact_quotes SET price=NULL WHERE price::text='NaN';"
+
+# Reiniciar el producer si su cursor quedó desincronizado
+docker compose restart producer
+
 # Apagar (mantiene datos)
 docker compose down
 
 # Reset total (⚠ borra volúmenes)
 docker compose down -v
+
+# Regenerar el PDF del informe
+python docs/generate_report.py
 ```
 
 ---
@@ -231,8 +289,22 @@ cd notebooks
 jupyter notebook
 ```
 
-- **`eda_dataset.ipynb`** — EDA del batch (Yahoo): calidad, distribución, cobertura.
-- **`eda_api.ipynb`** — EDA del stream (Finnhub): tasa de mensajes, justificación de la agregación a 1 min.
+- **`eda_dataset.ipynb`** — EDA del batch (Yahoo): calidad, distribución del precio de cierre, cobertura temporal, comparativa entre pares.
+- **`eda_api.ipynb`** — EDA del stream (Finnhub): tasa de mensajes, inter-arrival times, justificación cuantitativa de la agregación a 1 min.
+
+Los notebooks son **autocontenidos**: leen los CSVs de muestra de `notebooks/data/` y no requieren que Docker esté corriendo.
+
+---
+
+## 🐛 Troubleshooting
+
+| Síntoma | Causa probable | Solución |
+|---|---|---|
+| `validar_*` falla en rojo | GE no instalada o versión incompatible | `docker compose up -d --force-recreate airflow-scheduler` |
+| `fact_quotes` vacía | DAG no ha corrido o falló | Trigger manual desde Airflow UI |
+| Streamlit dice "Esperando mensajes..." | Producer no envía o ya envió todo | `docker compose restart producer` |
+| Metabase muestra `NaN` en columnas | Filas viejas con NUMERIC 'NaN' literal | Ver comando de limpieza arriba |
+| `preparar.py` no se encuentra | Mounts viejos en Airflow | `docker compose up -d --force-recreate airflow-scheduler` |
 
 ---
 
@@ -252,8 +324,9 @@ jupyter notebook
 ## 📚 Más información
 
 - 📄 [Documento técnico completo](docs/technical_report.md)
-- 📐 [Diagrama de arquitectura](docs/architecture.png)
+- 📑 [Informe ejecutivo PDF](docs/informe_entrega_final.pdf)
 - 📊 [Biblioteca de KPIs para Metabase](docs/kpis.sql)
+- 🖼 [Dashboard estático de Metabase (PDF)](docs/Metabase%20-%20Dashboard%20estatico.pdf)
 
 <div align="center">
 
