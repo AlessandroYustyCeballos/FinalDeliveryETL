@@ -1,16 +1,3 @@
-"""
-ETL_Delivery3 - Pipeline Forex con carga REAL al modelo dimensional en Postgres.
-
-Cambios vs Delivery2 (atendiendo feedback del profesor):
-  * Eliminadas tareas fantasma: Merge, validar_merge, verificar_db, crear_db.
-  * cargar_db ya NO es un BashOperator con echo. Ahora es un PythonOperator
-    que inserta en dim_symbol / dim_time / fact_quotes vía SQLAlchemy.
-  * La cuarentena persiste los lotes rechazados en la tabla quarantine_quotes
-    de Postgres, no es un simple echo.
-  * Las tres ramas (Yahoo, Finnhub, Alpha) llegan directo a cargar_db si
-    pasan validación, o a cuarentena si fallan.
-"""
-
 from datetime import datetime, timedelta
 import os
 import json
@@ -25,14 +12,14 @@ from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.bash import BashOperator
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN
+# CONFIGURACION
 # ---------------------------------------------------------
 BASE_PATH = os.environ.get("AIRFLOW_HOME", "/opt/airflow")
 yahoo_data  = f"{BASE_PATH}/data/yahoo.csv"
 finhub_data = f"{BASE_PATH}/data/finhub.csv"
 Temp_path   = f"{BASE_PATH}/data/temp"
 
-# Conexión al Postgres del proyecto (servicio docker-compose "postgres")
+# Conexion al postgres (docker-compose)
 POSTGRES_URI = os.environ.get(
     "TRADING_DB_URI",
     "postgresql+psycopg2://etl_user:etl_pass@postgres:5432/trading_db",
@@ -53,7 +40,7 @@ def _engine():
 
 
 # ============================================================
-# EXTRACCIÓN
+# EXTRACCION
 # ============================================================
 def extraccion_yahoo():
     os.makedirs(Temp_path, exist_ok=True)
@@ -72,12 +59,6 @@ def extraccion_finhub():
 
 
 def extraccion_alpha():
-    """Extracción Alpha con manejo graceful del rate limit (25 calls/día gratis).
-
-    Si Alpha no responde con la estructura esperada (típicamente por rate
-    limit), marcamos la rama como SKIPPED en vez de FAILED. Así las otras
-    ramas (Yahoo, Finnhub) siguen sin que cargar_db caiga en upstream_failed.
-    """
     os.makedirs(Temp_path, exist_ok=True)
     url = (
         "https://www.alphavantage.co/query"
@@ -90,7 +71,7 @@ def extraccion_alpha():
         raise AirflowSkipException(f"Alpha inalcanzable: {e}")
 
     if "Realtime Currency Exchange Rate" not in data:
-        # Caso típico: rate limit. Alpha devuelve {"Information": "..."} o {"Note": "..."}
+        # Cuando se uede sin consultas alpha
         msg = data.get("Information") or data.get("Note") or str(data)[:200]
         raise AirflowSkipException(f"Alpha sin datos (probable rate limit): {msg}")
 
@@ -100,7 +81,7 @@ def extraccion_alpha():
 
 
 # ============================================================
-# TRANSFORMACIÓN
+# TRANSFORMACION
 # ============================================================
 def transformacion_yahoo():
     src = f"{Temp_path}/yahoo.csv"
@@ -197,15 +178,7 @@ def transformacion_alpha():
 
 
 # ============================================================
-# VALIDACIÓN (Great Expectations - API moderna, mismo patrón
-# que el notebook GX_cloud.ipynb del docente).
-# ------------------------------------------------------------
-# Patrón:
-#   1. get_context (cloud si hay token, ephemeral local si no)
-#   2. Data Source pandas -> Asset DataFrame -> Batch Definition
-#   3. ExpectationSuite con gxe.Expect* (clases, no métodos)
-#   4. ValidationDefinition que une suite + batch
-#   5. .run() devuelve resultado con success bool + result_url
+# VALIDACION GREAT EXPECTATION
 # ============================================================
 def Validar_gx(**kwargs):
     import great_expectations as gx
@@ -223,9 +196,7 @@ def Validar_gx(**kwargs):
 
     df = pd.read_csv(ruta_csv)
 
-    # ------------------------------------------------------------
-    # 1. Contexto: cloud si hay credenciales, ephemeral local si no
-    # ------------------------------------------------------------
+
     if os.environ.get("GX_CLOUD_ACCESS_TOKEN"):
         context = gx.get_context(mode="cloud")
         print(f"[GX] Conectado a GX Cloud ({type(context).__name__})")
@@ -233,9 +204,7 @@ def Validar_gx(**kwargs):
         context = gx.get_context(mode="ephemeral")
         print(f"[GX] Contexto ephemeral local (sin cloud)")
 
-    # ------------------------------------------------------------
-    # 2. Data Source -> Asset -> Batch Definition
-    # ------------------------------------------------------------
+
     ds_name    = f"forex_{source_label}_ds"
     asset_name = f"forex_{source_label}_asset"
     batch_def  = f"forex_{source_label}_batch"
@@ -255,18 +224,16 @@ def Validar_gx(**kwargs):
     except Exception:
         batch_definition = asset.get_batch_definition(batch_def)
 
-    # ------------------------------------------------------------
-    # 3. ExpectationSuite con clases gxe.Expect*
-    # ------------------------------------------------------------
+
     suite_name = f"suite_forex_{source_label}"
     try:
         suite = gx.ExpectationSuite(name=suite_name)
 
-        # Reglas comunes a todas las fuentes
+     
         suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column="symbol"))
         suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column="timestamp"))
 
-        # Reglas OHLC (Yahoo / Finnhub)
+        # Reglas Yahoo / Finnhub
         if "close" in df.columns and df["close"].notna().any():
             for col in ("open", "high", "low", "close"):
                 suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column=col))
@@ -274,7 +241,7 @@ def Validar_gx(**kwargs):
                     column=col, min_value=0, strict_min=True
                 ))
 
-        # Reglas para price (Alpha)
+        # Reglas Alpha
         if "price" in df.columns and df["price"].notna().any():
             suite.add_expectation(gxe.ExpectColumnValuesToBeBetween(
                 column="price", min_value=0, strict_min=True
@@ -285,7 +252,7 @@ def Validar_gx(**kwargs):
         suite = context.suites.get(name=suite_name)
 
     # ------------------------------------------------------------
-    # 4. Validation Definition
+    # Validation Definition
     # ------------------------------------------------------------
     vd_name = f"vd_forex_{source_label}"
     try:
@@ -299,7 +266,7 @@ def Validar_gx(**kwargs):
         validation_definition = context.validation_definitions.get(vd_name)
 
     # ------------------------------------------------------------
-    # 5. Ejecutar la auditoría pasando el DataFrame como batch_parameters
+    # batch_parameters
     # ------------------------------------------------------------
     results = validation_definition.run(batch_parameters={"dataframe": df})
 
@@ -316,7 +283,7 @@ def Validar_gx(**kwargs):
 
 
 # ============================================================
-# CARGA REAL al modelo dimensional
+# CARGA modelo dimensional
 # ============================================================
 def _get_or_create_symbol(conn, symbol: str) -> int:
     """Upsert dim_symbol y devolver symbol_id."""
@@ -409,9 +376,7 @@ def cargar_db(**kwargs):
                     """),
                     {
                         "t": time_id, "s": symbol_id, "src": source_id,
-                        # Convertimos NaN de pandas a None para que Postgres
-                        # lo guarde como NULL (no como el valor especial 'NaN'
-                        # de NUMERIC, que rompe COALESCE en los dashboards).
+                        
                         "o": None if pd.isna(row.get("open"))  else float(row["open"]),
                         "h": None if pd.isna(row.get("high"))  else float(row["high"]),
                         "l": None if pd.isna(row.get("low"))   else float(row["low"]),
@@ -425,7 +390,7 @@ def cargar_db(**kwargs):
 
     print(f"[OK] {inserted} filas insertadas en fact_quotes")
 
-    # Limpieza de temporales validados
+    # Limpieza de temporales
     for r in rutas:
         try: os.remove(r)
         except OSError: pass
@@ -476,17 +441,17 @@ with DAG(
     tags=["delivery3", "forex", "dimensional"],
 ) as dag:
 
-    # Extracción
+    # Extraccion
     ext_yahoo  = PythonOperator(task_id="extraccion_yahoo",  python_callable=extraccion_yahoo)
     ext_finhub = PythonOperator(task_id="extraccion_finhub", python_callable=extraccion_finhub)
     ext_alpha  = PythonOperator(task_id="extraccion_alpha",  python_callable=extraccion_alpha)
 
-    # Transformación
+    # Transformacion
     tr_yahoo  = PythonOperator(task_id="transformacion_yahoo",  python_callable=transformacion_yahoo)
     tr_finhub = PythonOperator(task_id="transformacion_finhub", python_callable=transformacion_finhub)
     tr_alpha  = PythonOperator(task_id="transformacion_alpha",  python_callable=transformacion_alpha)
 
-    # Validación con branching
+    # Validaciin con branching
     val_yahoo = BranchPythonOperator(
         task_id="validar_yahoo",
         python_callable=Validar_gx,
@@ -503,14 +468,14 @@ with DAG(
         op_kwargs={"target_task_id": "transformacion_alpha", "branch_ok": "cargar_db"},
     )
 
-    # Carga REAL al modelo dimensional (ya no es un echo)
+    # Carga al modelo dimensional 
     cargar = PythonOperator(
         task_id="cargar_db",
         python_callable=cargar_db,
-        trigger_rule="none_failed_min_one_success",  # corre si al menos una rama validó OK
+        trigger_rule="none_failed_min_one_success", 
     )
 
-    # Cuarentena REAL (persiste en quarantine_quotes, ya no es echo)
+    # Cuarentena
     quar = PythonOperator(
         task_id="cuarentena",
         python_callable=cuarentena,

@@ -1,22 +1,4 @@
-"""
-Kafka Producer - Simula CDC desde fact_quotes a Kafka.
 
-Lee filas de la tabla consolidada fact_quotes (joineada con dimensiones
-para que el mensaje sea autosuficiente) y las publica al topic
-"quotes_stream" con un delay para simular un stream real.
-
-Diseño:
-  - Lleva un cursor (último quote_id procesado) para no reenviar lo mismo.
-  - Cuando llega al final, espera N segundos y vuelve a consultar
-    (por nuevos datos cargados por el DAG).
-  - Loop infinito hasta Ctrl+C.
-
-Uso desde host (Windows):
-  python app/producer.py
-
-Uso dentro del compose:
-  bootstrap_servers="kafka:29092"
-"""
 
 import json
 import os
@@ -30,14 +12,13 @@ from kafka.errors import NoBrokersAvailable
 from sqlalchemy import create_engine, text
 
 # ---------------------------------------------------------------------
-# Configuración (sobreescribible por env vars)
+# Config
 # ---------------------------------------------------------------------
-# Desde el host de Windows: localhost:9092
-# Desde dentro de un contenedor: kafka:29092
+
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
 KAFKA_TOPIC     = os.environ.get("KAFKA_TOPIC", "quotes_stream")
 
-# Desde el host: localhost:5433. Desde contenedor: postgres:5432
+
 POSTGRES_URI = os.environ.get(
     "TRADING_DB_URI",
     "postgresql+psycopg2://etl_user:etl_pass@localhost:5433/trading_db",
@@ -146,8 +127,7 @@ def main():
                 "close":      float(row["close"]) if pd.notna(row["close"]) else None,
                 "price":      float(row["price"]) if pd.notna(row["price"]) else None,
             }
-            # Particionado por símbolo: todos los ticks del mismo par van a
-            # la misma partición, preservando orden.
+         
             producer.send(KAFKA_TOPIC, key=row["symbol"], value=payload)
             last_id      = int(row["quote_id"])
             total_sent  += 1

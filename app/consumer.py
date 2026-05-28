@@ -1,10 +1,3 @@
-"""
-Kafka Consumer standalone - útil para verificar que el producer está
-publicando bien sin tener que abrir el dashboard de Streamlit.
-
-Uso:
-  python app/consumer.py
-"""
 
 import json
 import os
@@ -40,7 +33,7 @@ def _connect():
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP,
                 group_id=GROUP_ID,
-                auto_offset_reset="earliest",  # leer desde el principio del topic
+                auto_offset_reset="earliest", 
                 enable_auto_commit=True,
                 value_deserializer=lambda v: json.loads(v.decode("utf-8")),
                 key_deserializer=lambda k: k.decode("utf-8") if k else None,
