@@ -1,5 +1,9 @@
 <div align="center">
 
+# Alessandro Yusty Ceballos - 2240248
+
+# REPORTE TECNICO: https://docs.google.com/document/d/1GFHqWCPsaghh6-7mqp65LV4q3xEYetbzTpcHYNU1mDM/edit?usp=sharing
+
 # 📈 ETL Forex Pipeline
 
 **Pipeline ETL end-to-end para datos del mercado forex con orquestación Airflow, streaming Kafka y dashboards en tiempo real.**
