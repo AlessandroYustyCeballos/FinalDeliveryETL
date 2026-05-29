@@ -7,10 +7,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
-    # Variables de entorno opcionales para GX
-    GX_CLOUD_ACCESS_TOKEN:    "${GX_CLOUD_ACCESS_TOKEN:-}"
-    GX_CLOUD_ORGANIZATION_ID: "${GX_CLOUD_ORGANIZATION_ID:-}"
-    GX_CLOUD_WORKSPACE_ID:    "${GX_CLOUD_WORKSPACE_ID:-}"
+
     _PIP_ADDITIONAL_REQUIREMENTS: >-
       pandas requests yfinance finnhub-python websocket-client
       great_expectations
@@ -151,7 +148,26 @@ services:
       retries: 10
       start_period: 60s
 
-  #  Kafka Producer 
+  # stream Finnhub WebSocket 
+
+  finnhub-stream:
+    image: python:3.11-slim
+    container_name: finnhub-stream
+    working_dir: /opt/airflow
+    volumes:
+      - ./Utils:/opt/airflow/Utils
+      - ./Save.py:/opt/airflow/Save.py
+      - ./data:/opt/airflow/data
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      FOREX_SYMBOL: "${FOREX_SYMBOL:-EURUSD=X}"
+      PYTHONUNBUFFERED: "1"
+    command: >-
+      bash -c "pip install --quiet websocket-client pandas finnhub-python yfinance requests &&
+               python -u -c 'from Utils.Request import Finhub; Finhub(\"${FOREX_SYMBOL:-EURUSD=X}\")'"
+    restart: unless-stopped
+
+  #  Kafka Producer
   producer:
     image: python:3.11-slim
     container_name: producer
@@ -163,9 +179,10 @@ services:
       TRADING_DB_URI: postgresql+psycopg2://etl_user:etl_pass@postgres:5432/trading_db
       PRODUCER_DELAY: "1.0"
       PRODUCER_POLL_INTERVAL: "10.0"
+      PYTHONUNBUFFERED: "1"  
     command: >-
       bash -c "pip install --quiet kafka-python pandas psycopg2-binary sqlalchemy &&
-               python producer.py"
+               python -u producer.py"
     depends_on:
       kafka:
         condition: service_started
@@ -196,5 +213,11 @@ services:
 
 volumes:
   postgres_data:
+    external: true
+    name: etl-proyect-main_postgres_data
   airflow_db_data:
+    external: true
+    name: etl-proyect-main_airflow_db_data
   metabase_data:
+    external: true
+    name: etl-proyect-main_metabase_data

@@ -43,11 +43,30 @@ def _engine():
 # EXTRACCION
 # ============================================================
 def extraccion_yahoo():
+    """Descarga datos frescos de Yahoo Finance en cada corrida del DAG."""
+    import yfinance as yf
     os.makedirs(Temp_path, exist_ok=True)
-    if not os.path.exists(yahoo_data):
-        raise FileNotFoundError("No se encontró yahoo.csv. Ejecuta preparar.py primero.")
-    pd.read_csv(yahoo_data).to_csv(f"{Temp_path}/yahoo.csv", index=False)
-    print("[OK] Yahoo extraído")
+
+    symbol = os.environ.get("FOREX_SYMBOL", "EURUSD=X")
+    print(f"[Yahoo] Descargando {symbol} (period=2d, interval=1m)")
+
+    df = yf.download(symbol, period="2d", interval="1m", progress=False)
+    if df.empty:
+        if os.path.exists(yahoo_data):
+            print("[Yahoo] yfinance vacío, usando yahoo.csv como fallback")
+            pd.read_csv(yahoo_data).to_csv(f"{Temp_path}/yahoo.csv", index=False)
+            return
+        raise FileNotFoundError(f"yfinance no devolvió datos para {symbol} y no hay CSV bootstrap.")
+
+
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Ticker" in df.columns.names:
+            df.columns = df.columns.droplevel("Ticker")
+        else:
+            df.columns = df.columns.droplevel(1)
+    df = df.reset_index()
+    df.to_csv(f"{Temp_path}/yahoo.csv", index=False)
+    print(f"[OK] Yahoo extraído: {len(df)} filas")
 
 
 def extraccion_finhub():
@@ -71,7 +90,7 @@ def extraccion_alpha():
         raise AirflowSkipException(f"Alpha inalcanzable: {e}")
 
     if "Realtime Currency Exchange Rate" not in data:
-        # Cuando se uede sin consultas alpha
+
         msg = data.get("Information") or data.get("Note") or str(data)[:200]
         raise AirflowSkipException(f"Alpha sin datos (probable rate limit): {msg}")
 
@@ -187,7 +206,7 @@ def Validar_gx(**kwargs):
     ti = kwargs["ti"]
     target_task_id = kwargs.get("target_task_id")
     branch_ok = kwargs.get("branch_ok")
-    source_label = target_task_id.replace("transformacion_", "")  # yahoo / finhub / alpha
+    source_label = target_task_id.replace("transformacion_", "")  # yahoo, finhub y alpha
     ruta_csv  = ti.xcom_pull(task_ids=target_task_id)
 
     if not ruta_csv or not os.path.exists(ruta_csv):

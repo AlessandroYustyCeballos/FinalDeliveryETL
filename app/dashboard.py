@@ -1,10 +1,7 @@
 
-# Streamlit y Kafka Consumer http://localhost:8501
-
 
 import json
 import os
-import threading
 import time
 from collections import deque
 from datetime import datetime
@@ -20,8 +17,9 @@ from kafka.errors import NoBrokersAvailable
 # ---------------------------------------------------------------------
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "kafka:29092")
 KAFKA_TOPIC     = os.environ.get("KAFKA_TOPIC", "quotes_stream")
-BUFFER_SIZE     = int(os.environ.get("BUFFER_SIZE", "2000"))   # ticks max en memoria
-AUTO_REFRESH    = float(os.environ.get("AUTO_REFRESH", "2.0")) # repeticiones
+BUFFER_SIZE     = int(os.environ.get("BUFFER_SIZE", "2000"))
+AUTO_REFRESH    = float(os.environ.get("AUTO_REFRESH", "2.0"))
+POLL_MS         = int(os.environ.get("POLL_MS", "1500")) 
 
 st.set_page_config(
     page_title="Forex Real-Time Dashboard",
@@ -29,57 +27,59 @@ st.set_page_config(
 )
 
 
+# ---------------------------------------------------------------------
+# Estado persistente entre reruns 
+# ---------------------------------------------------------------------
 @st.cache_resource
-def get_shared_state():
-    return {
-        "buffer": deque(maxlen=BUFFER_SIZE),
-        "lock":   threading.Lock(),
-        "status": {"connected": False, "messages": 0, "started_at": None, "error": None},
-    }
-
-
-def _kafka_loop(state):
-    """Loop infinito que consume Kafka y llena el buffer."""
-    while True:
-        try:
-            consumer = KafkaConsumer(
-                KAFKA_TOPIC,
-                bootstrap_servers=KAFKA_BOOTSTRAP,
-                group_id=f"streamlit-{datetime.utcnow().timestamp()}",
-                auto_offset_reset="latest",
-                enable_auto_commit=True,
-                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-                consumer_timeout_ms=1000,
-            )
-            state["status"]["connected"]  = True
-            state["status"]["started_at"] = datetime.utcnow()
-            state["status"]["error"]      = None
-
-            for msg in consumer:
-                with state["lock"]:
-                    state["buffer"].append(msg.value)
-                    state["status"]["messages"] += 1
-        except NoBrokersAvailable as e:
-            state["status"]["connected"] = False
-            state["status"]["error"] = f"Kafka no disponible: {e}"
-            time.sleep(5)
-        except Exception as e:
-            state["status"]["connected"] = False
-            state["status"]["error"] = f"Consumer error: {e}"
-            time.sleep(5)
+def get_buffer():
+    return deque(maxlen=BUFFER_SIZE)
 
 
 @st.cache_resource
-def start_consumer_thread():
-    state = get_shared_state()
-    t = threading.Thread(target=_kafka_loop, args=(state,), daemon=True)
-    t.start()
-    return t
+def get_consumer():
+    """KafkaConsumer cacheado. Se crea una sola vez por sesión."""
+    try:
+        c = KafkaConsumer(
+            KAFKA_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP,
+            # group_id único para esta sesión - aislado de otros consumers
+            group_id=f"streamlit-{int(time.time())}",
+            auto_offset_reset="earliest",       # leer desde el principio
+            enable_auto_commit=False,
+            value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            consumer_timeout_ms=None,           # no timeout, polleamos manual
+        )
+        return c
+    except Exception as e:
+        st.error(f"No se pudo crear KafkaConsumer: {e}")
+        return None
 
 
-# consumer 
-start_consumer_thread()
-state = get_shared_state()
+def poll_messages(consumer, buffer, max_records=500):
+    """Saca mensajes del topic sin bloquear. Retorna cuántos llegaron."""
+    if consumer is None:
+        return 0
+    try:
+        records = consumer.poll(timeout_ms=POLL_MS, max_records=max_records)
+        count = 0
+        for tp, msgs in records.items():
+            for msg in msgs:
+                buffer.append(msg.value)
+                count += 1
+        return count
+    except NoBrokersAvailable:
+        return 0
+    except Exception as e:
+        st.warning(f"Error en poll: {e}")
+        return 0
+
+
+# ---------------------------------------------------------------------
+# Inicial
+# ---------------------------------------------------------------------
+buffer = get_buffer()
+consumer = get_consumer()
+nuevos = poll_messages(consumer, buffer)
 
 # ---------------------------------------------------------------------
 # UI
@@ -87,34 +87,31 @@ state = get_shared_state()
 st.title("📈 Forex Real-Time Dashboard")
 st.caption(f"Stream desde Kafka topic **`{KAFKA_TOPIC}`** vía `{KAFKA_BOOTSTRAP}`")
 
-
-with state["lock"]:
-    buf_snapshot = list(state["buffer"])
-    status = dict(state["status"])
-
+buf_snapshot = list(buffer)
 
 col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-col_s1.metric(" Conexión", "OK" if status["connected"] else "DOWN")
-col_s2.metric(" Mensajes recibidos", status["messages"])
-col_s3.metric(" En buffer", len(buf_snapshot))
+col_s1.metric(" Conexión", "OK" if consumer is not None else "DOWN")
+col_s2.metric(" Total recibidos", len(buf_snapshot))
+col_s3.metric(" Nuevos este refresh", nuevos)
 col_s4.metric(" Refresh cada", f"{AUTO_REFRESH}s")
 
-if status["error"]:
-    st.warning(f" {status['error']}")
+if consumer is None:
+    st.error("Sin conexión a Kafka. Revisa que el broker esté arriba.")
+    st.stop()
 
 if not buf_snapshot:
-    st.info(" Esperando mensajes...")
+    st.info(" Esperando mensajes... Asegúrate de que el producer está enviando.")
     time.sleep(AUTO_REFRESH)
     st.rerun()
 
-
+# ---------------------------------------------------------------------
+# DataFrame del buffer
+# ---------------------------------------------------------------------
 df = pd.DataFrame(buf_snapshot)
 df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 df = df.sort_values("timestamp")
 
-# ---------------------------------------------------------------------
-# selectores
-# ---------------------------------------------------------------------
+
 st.sidebar.header("⚙️ Controles")
 
 available_symbols = sorted(df["symbol"].dropna().unique().tolist())
@@ -138,7 +135,7 @@ window_size = st.sidebar.slider(
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Buffer máx: {BUFFER_SIZE} ticks")
-st.sidebar.caption(f"Conectado desde: {status.get('started_at', '—')}")
+st.sidebar.caption(f"Bootstrap: {KAFKA_BOOTSTRAP}")
 
 # ---------------------------------------------------------------------
 # Filtrado
@@ -147,11 +144,10 @@ df_sym = df[(df["symbol"] == selected_symbol) & (df["source"].isin(selected_sour
 df_sym = df_sym.tail(window_size)
 
 if df_sym.empty:
-    st.warning(f"Sin datos para **{selected_symbol}** con las fuentes seleccionadas. Esperando...")
+    st.warning(f"Sin datos para **{selected_symbol}** con las fuentes seleccionadas.")
     time.sleep(AUTO_REFRESH)
     st.rerun()
 
-# Metrica útil: 
 df_sym = df_sym.copy()
 df_sym["metric"] = df_sym["close"].fillna(df_sym["price"])
 
@@ -171,7 +167,7 @@ col_k3.metric("🔽 Mínimo (ventana)", f"{df_sym['metric'].min():.5f}")
 col_k4.metric("📊 Ticks en ventana", len(df_sym))
 
 # ---------------------------------------------------------------------
-# linea de precios
+# Gráfico de precios
 # ---------------------------------------------------------------------
 fig = go.Figure()
 for src in selected_sources:
@@ -195,7 +191,7 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------------
-# Vista panoramica
+# Vista panorámica
 # ---------------------------------------------------------------------
 st.subheader("🌐 Vista panorámica — último precio por símbolo")
 panorama = (
@@ -213,7 +209,7 @@ panorama = (
 st.dataframe(panorama, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------
-# Tabla de ultimos ticks (texto)
+# Tabla de últimos ticks
 # ---------------------------------------------------------------------
 with st.expander(f"🧾 Últimos {min(20, len(df_sym))} ticks de {selected_symbol}"):
     st.dataframe(
